@@ -1,0 +1,21 @@
+mastersCheckFrequency: 3
+masterRemoveThreshold: 10
+constantMeasureFrequency: 20
+
+router-hostname: "router.local"
+router-login: "root"
+router-password: "pass"
+
+#masters can reach me using those credentials
+sensorKnownMasters:
+  -xyz123
+  -Master1
+mastersTokens:
+  xyz123: passToSensor
+  Master1: passToSensor
+
+#I  provide masters with those credentials
+mastersCredentials:
+  Master1: token
+
+trackedMac: 18:af:61:4a:03:c9

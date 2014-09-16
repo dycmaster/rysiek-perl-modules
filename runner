@@ -1,0 +1,10 @@
+#!/bin/bash
+
+## These 3 lines are mandatory.
+export PERLBREW_ROOT=/home/rysiek/perl5/perlbrew
+export PERLBREW_HOME=/home/rysiek/.perlbrew
+source ${PERLBREW_ROOT}/etc/bashrc
+
+perlbrew use "$PERL_VERSION"
+perl  bin/app.pl --environment $ENV &> logs/prod.log
+

@@ -1,0 +1,22 @@
+mastersCheckFrequency: 6
+masterRemoveThreshold: 10
+constantMeasureFrequency: 3
+
+local: 1
+
+pathToCheck: /proc/asound/card0/pcm0p/sub0/status
+host: vaio
+user: frs
+pass: dummyPass
+
+#masters can reach me using those credentials
+sensorKnownMasters:
+  -xyz123
+  -Master1
+mastersTokens:
+  xyz123: passToSensor
+  Master1: passToSensor
+
+#I  provide masters with those credentials
+mastersCredentials:
+  Master1: token

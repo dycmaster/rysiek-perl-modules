@@ -1,0 +1,21 @@
+logger: 'console'
+log: 'debug'
+appname: "zeroconf"
+charset: "UTF-8"
+serializer: YAML
+
+
+myName: zeroconfService
+trackingInterval: 20
+
+
+unitIdentifiers:
+        sensor: '_nufw._tcp' 
+        master: '_islc._tcp'
+        action: '_venus._tcp'
+        processor: '_topx._tcp'
+        ui: '_unicontrol._tcp'
+        data: '_netangel._tcp'
+        log: '_integral._tcp'
+        avahi: '_krb524._udp'
+

@@ -1,0 +1,5 @@
+logger: 'console'
+log: 'debug'
+startup_info: 0
+show_errors:  1
+warnings: 1

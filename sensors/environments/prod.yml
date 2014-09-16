@@ -1,0 +1,9 @@
+logger: 'console'
+log: 'debug'
+
+sensors:  
+  - SoundCardSensor
+  - UserHomeWifi
+
+
+

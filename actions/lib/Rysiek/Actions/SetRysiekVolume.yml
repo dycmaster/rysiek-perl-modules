@@ -1,0 +1,6 @@
+knownMasters:
+  -Master1
+  -xyz123
+mastersTokens:
+  xyz123: passToAction
+  Master1: passToAction
