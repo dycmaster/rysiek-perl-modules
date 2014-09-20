@@ -6,5 +6,9 @@ export PERLBREW_HOME=/home/rysiek/.perlbrew
 source ${PERLBREW_ROOT}/etc/bashrc
 
 perlbrew use "$PERL_VERSION"
+if [ ! -d "logs"  ]; then
+	mkdir logs;
+fi
+
 perl  bin/app.pl --environment $ENV &> logs/prod.log
 

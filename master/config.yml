@@ -11,6 +11,7 @@ processorService: '_topx._tcp'
 uiService: '_unicontrol._tcp'
 dataService: '_netangel._tcp'
 logService: '_integral._tcp'
+avahiService: '_krb524._udp'
 
 sensorsUpdateFrequency: 5
 subscribedSensorsTrackingFrequency: 10
@@ -29,6 +30,9 @@ trackedSensors:
 
 myLogicServices:
         - logicService1
+
+logicServicesTokens:
+  logicService1: password
 
 
 #Sensors have to give me those credentials

@@ -9,33 +9,36 @@ package Rysiek::Sensors::AbstractSensor 0.1{
   use threads::shared;
   use HTTP::Request::Common;
   use LWP::UserAgent;
+  use Thread::Queue;
+  use LWP::Simple qw(!get);
 
   my $configExt = '.yml';
+  my $q = Thread::Queue->new();
 
   has "port" => (
-  is  => "ro",
-  isa => "Str",
-  required => 1,
+    is  => "ro",
+    isa => "Str",
+    required => 1,
   );
 
   has "name" =>(
-  is => "ro",
-  isa => "Str",
-  required =>1,
+    is => "ro",
+    isa => "Str",
+    required =>1,
   );
 
   has "sensorConfig" =>(
-  is => "ro",
+    is => "ro",
 
-  default => sub{
-    my $self = shift;
-    my $obj_type = ref $self;
-    my $fullPath=abs_path($0);
-    $fullPath =~ s{bin/app.pl}{}g;
-    my $configPath = $fullPath .'lib/' . ($obj_type =~ s{::}{/}gr) . $configExt;
-    my $config = YAML::Tiny->read($configPath);
-    $config;
-  }
+    default => sub{
+      my $self = shift;
+      my $obj_type = ref $self;
+      my $fullPath=abs_path($0);
+      $fullPath =~ s{bin/app.pl}{}g;
+      my $configPath = $fullPath .'lib/' . ($obj_type =~ s{::}{/}gr) . $configExt;
+      my $config = YAML::Tiny->read($configPath);
+      $config;
+    }
 
   );
 
@@ -56,10 +59,13 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     debug ("Avahi done for ". ref $self);
     $self->initPaths;
     debug ("Paths done for ". ref $self);
-    # $self->initMastersMonitor;
-    # debug ("init masters monitor done for ". ref $self);
+    $self->initMastersMonitor;
+    debug ("init masters monitor done for ". ref $self);
     $self->initSensing;
     debug ("initSensing done for ". ref $self);
+
+    &handleRequestsFromQueue;
+    debug("POST requests handler initiated");
   }
 
   sub initSensing{
@@ -90,6 +96,7 @@ package Rysiek::Sensors::AbstractSensor 0.1{
   sub checkMasters{
     my @InboundParameters = @_;
     my $self = $InboundParameters[0];
+    $|=1;
 
     while(1){
       {
@@ -98,12 +105,14 @@ package Rysiek::Sensors::AbstractSensor 0.1{
         # debug($self->name . "has masters: " . $size);
 
         foreach my $master (keys $self->{registeredMasters}){
-          my $lastRegisterTime = $self->{registeredMasters}{$master}{time};
-          my $currTime = time;
-          my $elapsed = $currTime - $lastRegisterTime;
+          my $masterIp = $self->{registeredMasters}{$master}{ip};
+          my $masterPort = $self->{registeredMasters}{$master}{port};
 
-          if($elapsed > $self->sensorConfig()->[0]->{"masterRemoveThreshold"} ){
-            # debug($self->name ." will be removed!!!!!!!!!!!!");
+          my $url = "http://". $masterIp .":". $masterPort ."/masters/". $master ."/ping";
+          my $res = LWP::Simple::get($url);
+
+          if(!defined $res){
+            say("Master ". $master ." is not available and will be removed!");
             delete $self->{registeredMasters}{$master};
           }
         }
@@ -118,11 +127,11 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     my $self = shift;
     use Net::Rendezvous::Publish;
     my $publisher = Net::Rendezvous::Publish->new
-    or die "couldn't make a Publisher object";
+      or die "couldn't make a Publisher object";
     my $service = $publisher->publish(
-    name => $self->name,
-    type => '_nufw._tcp',
-    port => $self->port,
+      name => $self->name,
+      type => '_nufw._tcp',
+      port => $self->port,
     );
     1;
   }
@@ -166,6 +175,9 @@ package Rysiek::Sensors::AbstractSensor 0.1{
           $self->{registeredMasters}{params->{user}} = \%row;
         }
         debug (params->{user}." subscribed succesfully to  sensor $mName ");
+        debug("will send current sensor value to Master");
+        my @res = $self->measureOnce();
+        $self->updateMastersWithValue(\@res);
         say "ok";
       }
     };
@@ -185,34 +197,34 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     }
   }
 
-sub authorizeMaster{
-  my $self = shift;
-  $self->checkCredentials("sensorKnownMasters", "mastersTokens");
-}
-
-sub checkCredentials{
-  my $self = shift;
-  my $usersBase = shift;
-  my $passBase = shift;
-  my $mName = $self->name;
-  my $user = params->{user};
-  my $token = params->{token};
-
-  debug ("$user is trying to authorize in $mName with token $token. Request path:". request->path_info);
-
-  if(defined $user && defined $token){
-  if($user ~~ $self->sensorConfig->[0]->{$usersBase}){    
-    if($token eq $self->sensorConfig->[0]->{$passBase}{$user}){
-      debug ("$user authorized successfuly in $mName ");
-      return 1;
-    }
+  sub authorizeMaster{
+    my $self = shift;
+    $self->checkCredentials("sensorKnownMasters", "mastersTokens");
   }
-}
 
-  debug ("$user wrong credentials to  $mName. Sending 403.. ");
-  send_error("Wrong credentials", 403);
-  1;
-}
+  sub checkCredentials{
+    my $self = shift;
+    my $usersBase = shift;
+    my $passBase = shift;
+    my $mName = $self->name;
+    my $user = params->{user};
+    my $token = params->{token};
+
+    #debug ("$user is trying to authorize in $mName with token $token. Request path:". request->path_info);
+
+    if(defined $user && defined $token){
+      if($user ~~ $self->sensorConfig->[0]->{$usersBase}){    
+        if($token eq $self->sensorConfig->[0]->{$passBase}{$user}){
+          #debug ("$user authorized successfuly in $mName ");
+          return 1;
+        }
+      }
+    }
+
+    debug ("$user wrong credentials to  $mName. Sending 403.. ");
+    send_error("Wrong credentials", 403);
+    1;
+  }
 
 
 # for a single-shot measurement
@@ -223,40 +235,57 @@ sub checkCredentials{
   };
 
 
-sub updateMastersWithValue{
-  my $self = shift;
-  my $val  = shift;
-  my $name = $self->name;
-  {
-    lock($self->{registeredMasters});
+  sub updateMastersWithValue{
+    my $self = shift;
+    my $val  = shift;
+    my $name = $self->name;
+    my $mSize = keys $self->{registeredMasters};
+    $|=1;
+    say("sensor $name will update masters with its change. Current masters: $mSize");
+    {
+      lock($self->{registeredMasters});
 
-    foreach my $master (keys $self->{registeredMasters}){
-      my $masterIp = $self->{registeredMasters}{$master}{ip};
-      my $masterPort = $self->{registeredMasters}{$master}{port};
-      my $myToken = $self->sensorConfig->[0]->{"mastersCredentials"}{$master};
+      foreach my $master (keys $self->{registeredMasters}){
+        my $masterIp = $self->{registeredMasters}{$master}{ip};
+        my $masterPort = $self->{registeredMasters}{$master}{port};
+        my $myToken = $self->sensorConfig->[0]->{"mastersCredentials"}{$master};
 
-      my $ua = LWP::UserAgent->new;
-      my $server_endpoint = "http://". $masterIp .":". $masterPort ."/masters/". $master ."/value";
+        my $server_endpoint = "http://". $masterIp .":". $masterPort ."/masters/". $master ."/value";
+        my $content = [sensor => ($name), value => $val, user => $name, token=> $myToken];
+        my %reqData = (url=> $server_endpoint, content=> $content, sender=>$name);
 
-      my $res = $ua->request(POST  "$server_endpoint", [sensor => ($name),
-          value => $val, user => $name, token=> $myToken] );
-
-      # Check the outcome of the response
-      if (!$res->is_success) {
-        my $bt = ++$self->{registeredMasters}{$master}{wrongTrials};
-        warn("Unable to send values  to master $master  for time $bt!!");
-        if($bt > 3){
-          delete $self->{registeredMasters}{$master};
-          debug("Master $master deleted from subscription.");
-        }
-      }else{
-        $self->{registeredMasters}{$master}{wrongTrials}=0;
+        $q->enqueue(\%reqData);
       }
-
     }
+
   }
 
-}
+  sub handleRequestsFromQueue{
+    my $thr = threads->create(
+      sub{
+        $| =1;
+        while(defined( my $item = $q->dequeue())){
+          my $url = $item->{url};
+          my $content = $item->{content};
+          my $sender = $item->{sender};
+          say("Processing request from $sender: $url");
+
+          my $ua = LWP::UserAgent->new;
+          my $res = $ua->request(POST  "$url", $content  );
+
+          # Check the outcome of the response
+          if (!$res->is_success) {
+            say("unable to send $url");
+          }else{
+            say("request: $url from $sender done OK" );
+          }
+        }
+      }
+    );
+    $thr->detach();
+    return 1;
+  }
+
 
   true;
 }

@@ -3,7 +3,6 @@ log: 'debug'
 
 sensors:  
   - SoundCardSensor
-  - UserHomeWifi
 
 
 
