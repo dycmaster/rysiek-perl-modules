@@ -13,6 +13,7 @@ package Rysiek::Master 0.01 {
   use URI::Escape;
   use Thread::Queue;
   use YAML::Tiny;
+  use Time::HiRes qw/ time sleep /;
 
   my $sensors : shared;
   my $subscribedSensors : shared;
@@ -32,10 +33,6 @@ package Rysiek::Master 0.01 {
     set port => $dancerPort;
     debug "Dancer port will be $dancerPort";
 
-    share( $self->{sensors} );    #hash
-    my %emptyHash : shared = ();
-    $self->{sensors} = \%emptyHash;
-
     share( $self->{subscribedSensors} );    #hash
     my %emptyHash2 : shared = ();
     $self->{subscribedSensors} = \%emptyHash2;
@@ -45,57 +42,253 @@ package Rysiek::Master 0.01 {
     $self->{logicServices} = \%emptyHash3;
 
     $self->initPaths;
-
-    &handleGetFromQueue;
-    &handlePostFromQueue;
-
     $self->initAvahi;
-    $self->initSensorsTrackingEngine;
-    $self->initLogicServicesTracking;
+    $self->initWorkerThread;
 
     my $name = $self->name;
     debug("Master $name initiaded ok.");
   }
 
-  sub handlePostFromQueue {
-    my $thr = threads->create(
+  sub initWorkerThread {
+    my $self = shift;
+    say "creating worker";
+
+    my $worker = threads->create(
       sub {
         $| = 1;
-        while ( defined( my $item = $postQ->dequeue() ) ) {
-          say "Handling POST request $item";
-          my $ua  = LWP::UserAgent->new;
-          my $res = $ua->request( POST "$item" );
-          if ( $res->is_success ) {
-            say "POST request $item sent successfully";
+        sleep 5;
+        my ( $lastWorkerStart, $lastSensorTrackTime, $lastLogicTrackTime )= (time, time, 0);
+        my $sensorsUpdateF   = config->{sensorsUpdateFrequency};
+        my $logicServUpdateF = config->{logicServicesSearchingFrequency};
+
+        while (1) {
+          $lastWorkerStart = time;
+
+          $self->handlePostFromQueue;
+          $self->handleGetFromQueue;
+
+          if ( time - $lastSensorTrackTime >= $sensorsUpdateF ) {
+            $self->findAndTrackSensorsViaZeroconfService;
+            $lastSensorTrackTime = time;
           }
-          else {
-            say "unable to send POST request $item";
+
+          if ( time - $lastLogicTrackTime >= $logicServUpdateF ) {
+            $self->findAndStoreLogicServicesViaZeroconfService;
+            $lastLogicTrackTime = time;
+          }
+
+          #sleep to not work too much
+          my $elasped = ( time - $lastWorkerStart ) * 1000;
+
+          #say "elasped is $elasped ms";
+          my $workerPeriod = config->{workerPeriod};
+          if ( $elasped < $workerPeriod ) {
+            my $timeToSleep = ( $workerPeriod - $elasped ) / 1000;
+#            say "time to sleep is: $timeToSleep s";
+            sleep($timeToSleep);
           }
         }
-      }
+        }
     );
-    $thr->detach();
+    say "detaching worker";
+    $worker->detach();
+    return 1;
+  }
+
+  sub handlePostFromQueue {
+    while ( $postQ->pending() > 0 ) {
+      my $item = $postQ->dequeue();
+      say "Handling POST request $item";
+      my $ua  = LWP::UserAgent->new;
+      my $res = $ua->request( POST "$item" );
+      if ( $res->is_success ) {
+        say "POST request $item sent successfully";
+      }
+      else {
+        say "unable to send POST request $item";
+      }
+    }
     return 1;
   }
 
   sub handleGetFromQueue {
-    my $thr = threads->create(
-      sub {
-        $| = 1;
-        while ( defined( my $item = $getQ->dequeue() ) ) {
-          say "Handling GET request $item";
-          my $res = LWP::Simple::get($item);
-          if ( defined $res ) {
-            say "GET request $item sent successfully";
+    while ( $getQ->pending() > 0 ) {
+      my $item = $getQ->dequeue();
+      say "Handling GET request $item";
+      my $res = LWP::Simple::get($item);
+      if ( defined $res ) {
+        say "GET request $item sent successfully";
+      }
+      else {
+        say "unable to send GET request $item";
+      }
+    }
+    return 1;
+  }
+
+  sub findAndTrackSensorsViaZeroconfService {
+    my $self = shift;
+
+    my $zeroconfServiceLink = $self->getBasicAvahiServiceLink;
+    $zeroconfServiceLink = $zeroconfServiceLink . "service/sensor";
+    my $zeroconfRes = LWP::Simple::get($zeroconfServiceLink);
+
+    {
+      lock( $self->{subscribedSensors} );
+      %{ $self->{subscribedSensors} } = ();
+
+      if ( defined $zeroconfRes ) {
+        my $trackedSensors = $self->checkWhatITrack;
+        my $sensorsYaml    = YAML::Tiny->read_string($zeroconfRes);
+
+        if ( defined $sensorsYaml->[0] ) {
+          foreach my $trackedSensor (@$trackedSensors) {
+            next unless defined $sensorsYaml->[0]->{$trackedSensor};
+
+            my $address = $sensorsYaml->[0]->{$trackedSensor}{address};
+            my $port    = $sensorsYaml->[0]->{$trackedSensor}{port};
+            if ( defined $address && defined $port ) {
+              my $userName  = config->{masterName};
+              my $userToken = config->{masterToken};
+              my $yesNoLink =
+"http://$address:$port/sensors/$trackedSensor/subscribed?user=$userName&token=$userToken";
+
+              my $alreadySubs = LWP::Simple::get($yesNoLink);
+
+              if ( defined $alreadySubs && $alreadySubs ne "1" ) {
+                say "not subscribed yet to $trackedSensor";
+                my $myPort       = config->{port};
+                my $ua           = LWP::UserAgent->new;
+                my $subscribeUrl = "http://$address:$port/sensors/$trackedSensor/subscribe";
+                my $res          = $ua->request(
+                  POST "$subscribeUrl",
+                  [
+                    user  => $userName,
+                    token => $userToken,
+                    port  => $myPort
+                  ]
+                );
+
+                if ( defined $res && $res->is_success() ) {
+                  say "subscribed ok to $trackedSensor";
+                  my %emptyHash2 : shared = ();
+                  $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
+                  $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
+                  $self->{subscribedSensors}{$trackedSensor}{address} = $address;
+                }
+                elsif ( defined $res ) {
+                  say "unable to subscribe to $trackedSensor";
+                }
+                else {
+                  say "$trackedSensor is visible in the zeroconf service but is not reachable!";
+                }
+              }
+              elsif ( defined $alreadySubs && $alreadySubs eq "1" ) {
+                my %emptyHash2 : shared = ();
+                $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
+                $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
+                $self->{subscribedSensors}{$trackedSensor}{address} = $address;
+              }
+              else {
+                say "$trackedSensor is visible in the zeroconf service but is not reachable!";
+              }
+            }
           }
-          else {
-            say "unable to send GET request $item";
+
+        }
+      }
+      else {
+        say "No reply from zeroconfService, even though it looks available";
+      }
+    }
+  }
+
+  sub findAndStoreLogicServicesViaZeroconfService {
+    my $self = shift;
+
+    my $zeroconfLink = $self->getBasicAvahiServiceLink;
+    $zeroconfLink = $zeroconfLink . "service/processor";
+    my $res = LWP::Simple::get($zeroconfLink);
+
+    {
+      lock( $self->{logicServices} );
+      %{ $self->{logicServices} } = ();
+
+      if ( defined $res ) {
+
+        #get the list of my processors
+        my $myProcessors = $self->checkMyProcessors;
+        my $yaml         = YAML::Tiny->read_string($res);
+        if ( defined $yaml->[0] ) {
+
+          foreach my $availableProc ( keys $yaml->[0] ) {
+            next unless $availableProc ~~ $myProcessors;
+
+            my $address = $yaml->[0]->{$availableProc}{address};
+            my $port    = $yaml->[0]->{$availableProc}{port};
+            if ( defined $address && defined $port ) {
+
+              my $user  = config->{masterName};
+              my $token = config->{logicServicesTokens}{$availableProc};
+              my $yesNo =
+                  "http://"
+                . $address . ":"
+                . $port
+                . "/processors/"
+                . $availableProc
+                . "/subscribed?user="
+                . $user
+                . "&token=$token";
+
+              my $alreadySubscribed = LWP::Simple::get($yesNo);
+              if ( defined $alreadySubscribed
+                && $alreadySubscribed ne "true" )
+              {
+                say "not subscribed yet to logic processor: $availableProc";
+                my $myPort = config->{port};
+
+                my $subscribe =
+                    "http://"
+                  . $address . ":"
+                  . $port
+                  . "/processors/"
+                  . $availableProc
+                  . "/subscribe?user="
+                  . $user
+                  . "&token=$token&port=$myPort";
+
+                my $subs = LWP::Simple::get($subscribe);
+                if ( defined $subs && $subs eq "true" ) {
+                  say "subscribed ok to $availableProc";
+                  my %emptyHash3 : shared = ();
+                  $self->{logicServices}{$availableProc}          = \%emptyHash3;
+                  $self->{logicServices}{$availableProc}{address} = $address;
+                  $self->{logicServices}{$availableProc}{port}    = $port;
+                }
+                elsif ( defined $subs && $subs eq "false" ) {
+                  say "unable to subscribe to $availableProc";
+                }
+                else {
+                  say "$availableProc is visible in the zeroconf service but is not reachable!";
+                }
+              }
+              elsif ( defined $alreadySubscribed ) {
+                my %emptyHash3 : shared = ();
+                $self->{logicServices}{$availableProc}          = \%emptyHash3;
+                $self->{logicServices}{$availableProc}{address} = $address;
+                $self->{logicServices}{$availableProc}{port}    = $port;
+              }
+              else {
+                say "$availableProc is visible in the zeroconf service but is not reachable!";
+              }
+            }
           }
         }
       }
-    );
-    $thr->detach();
-    return 1;
+      else {
+        say "No response from the zeroconf service!";
+      }
+    }
   }
 
   sub initPaths {
@@ -231,199 +424,6 @@ package Rysiek::Master 0.01 {
     send_error( "Wrong credentials", 403 );
     1;
   }
-
-  sub initSensorsTrackingEngine {
-    my $self   = shift;
-    my @Params = ($self);
-
-    my $thr = threads->create( \&findAndTrackSensorsViaZeroconfService, @Params );
-    $thr->detach();
-  }
-
-  sub findAndTrackSensorsViaZeroconfService {
-    my @InboundParameters = @_;
-    my $self              = $InboundParameters[0];
-    $| = 1;
-
-    while (1) {
-      my $zeroconfServiceLink = $self->getBasicAvahiServiceLink;
-      $zeroconfServiceLink = $zeroconfServiceLink . "service/sensor";
-      my $zeroconfRes = LWP::Simple::get($zeroconfServiceLink);
-
-      {
-        lock( $self->{subscribedSensors} );
-        %{ $self->{subscribedSensors} } = ();
-
-        if ( defined $zeroconfRes ) {
-          my $trackedSensors = $self->checkWhatITrack;
-          my $sensorsYaml    = YAML::Tiny->read_string($zeroconfRes);
-
-          if ( defined $sensorsYaml->[0] ) {
-            foreach my $trackedSensor (@$trackedSensors) {
-              next unless defined $sensorsYaml->[0]->{$trackedSensor};
-
-              my $address = $sensorsYaml->[0]->{$trackedSensor}{address};
-              my $port    = $sensorsYaml->[0]->{$trackedSensor}{port};
-              if ( defined $address && defined $port ) {
-                my $userName  = config->{masterName};
-                my $userToken = config->{masterToken};
-                my $yesNoLink =
-"http://$address:$port/sensors/$trackedSensor/subscribed?user=$userName&token=$userToken";
-
-                my $alreadySubs = LWP::Simple::get($yesNoLink);
-
-                if ( defined $alreadySubs && $alreadySubs ne "1" ) {
-                  say "not subscribed yet to $trackedSensor";
-                  my $myPort       = config->{port};
-                  my $ua           = LWP::UserAgent->new;
-                  my $subscribeUrl = "http://$address:$port/sensors/$trackedSensor/subscribe";
-                  my $res          = $ua->request(
-                    POST "$subscribeUrl",
-                    [
-                      user  => $userName,
-                      token => $userToken,
-                      port  => $myPort
-                    ]
-                  );
-
-                  if ( defined $res && $res->is_success() ) {
-                    say "subscribed ok to $trackedSensor";
-                    my %emptyHash2 : shared = ();
-                    $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
-                    $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
-                    $self->{subscribedSensors}{$trackedSensor}{address} = $address;
-                  }
-                  elsif ( defined $res ) {
-                    say "unable to subscribe to $trackedSensor";
-                  }
-                  else {
-                    say "$trackedSensor is visible in the zeroconf service but is not reachable!";
-                  }
-                }
-                elsif ( defined $alreadySubs && $alreadySubs eq "1" ) {
-                  my %emptyHash2 : shared = ();
-                  $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
-                  $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
-                  $self->{subscribedSensors}{$trackedSensor}{address} = $address;
-                }
-                else {
-                  say "$trackedSensor is visible in the zeroconf service but is not reachable!";
-                }
-              }
-            }
-
-          }
-        }
-        else {
-          say "No reply from zeroconfService, even though it looks available";
-        }
-      }
-      sleep( config->{sensorsUpdateFrequency} );
-    }
-  }
-  
-  sub initLogicServicesTracking {
-    my $self   = shift;
-    my @Params = ($self);
-
-    my $thr = threads->create( \&findAndStoreLogicServicesViaZeroconfService, @Params );
-    $thr->detach();
-  }
-
-  sub findAndStoreLogicServicesViaZeroconfService {
-    my @InboundParams = @_;
-    my $self          = $InboundParams[0];
-    $| = 1;
-    sleep 10;
-
-    while (1) {
-      my $zeroconfLink = $self->getBasicAvahiServiceLink;
-      $zeroconfLink = $zeroconfLink . "service/processor";
-      my $res = LWP::Simple::get($zeroconfLink);
-
-      {
-        lock( $self->{logicServices} );
-        %{ $self->{logicServices} } = ();
-
-        if ( defined $res ) {
-
-          #get the list of my processors
-          my $myProcessors = $self->checkMyProcessors;
-          my $yaml         = YAML::Tiny->read_string($res);
-          if ( defined $yaml->[0] ) {
-
-            foreach my $availableProc ( keys $yaml->[0] ) {
-              next unless $availableProc ~~ $myProcessors;
-
-              my $address = $yaml->[0]->{$availableProc}{address};
-              my $port    = $yaml->[0]->{$availableProc}{port};
-              if ( defined $address && defined $port ) {
-
-                my $user  = config->{masterName};
-                my $token = config->{logicServicesTokens}{$availableProc};
-                my $yesNo =
-                    "http://"
-                  . $address . ":"
-                  . $port
-                  . "/processors/"
-                  . $availableProc
-                  . "/subscribed?user="
-                  . $user
-                  . "&token=$token";
-
-                my $alreadySubscribed = LWP::Simple::get($yesNo);
-                if ( defined $alreadySubscribed
-                  && $alreadySubscribed ne "true" )
-                {
-                  say "not subscribed yet to logic processor: $availableProc";
-                  my $myPort = config->{port};
-
-                  my $subscribe =
-                      "http://"
-                    . $address . ":"
-                    . $port
-                    . "/processors/"
-                    . $availableProc
-                    . "/subscribe?user="
-                    . $user
-                    . "&token=$token&port=$myPort";
-
-                  my $subs = LWP::Simple::get($subscribe);
-                  if ( defined $subs && $subs eq "true" ) {
-                    say "subscribed ok to $availableProc";
-                    my %emptyHash3 : shared = ();
-                    $self->{logicServices}{$availableProc}          = \%emptyHash3;
-                    $self->{logicServices}{$availableProc}{address} = $address;
-                    $self->{logicServices}{$availableProc}{port}    = $port;
-                  }
-                  elsif ( defined $subs && $subs eq "false" ) {
-                    say "unable to subscribe to $availableProc";
-                  }
-                  else {
-                    say "$availableProc is visible in the zeroconf service but is not reachable!";
-                  }
-                }
-                elsif ( defined $alreadySubscribed ) {
-                  my %emptyHash3 : shared = ();
-                  $self->{logicServices}{$availableProc}          = \%emptyHash3;
-                  $self->{logicServices}{$availableProc}{address} = $address;
-                  $self->{logicServices}{$availableProc}{port}    = $port;
-                }
-                else {
-                  say "$availableProc is visible in the zeroconf service but is not reachable!";
-                }
-              }
-            }
-          }
-        }
-        else {
-          say "No response from the zeroconf service!";
-        }
-      }
-      sleep( config->{logicServicesSearchingFrequency} );
-    }
-  }
-
 
   sub getBasicAvahiServiceLink {
     my $self = shift;

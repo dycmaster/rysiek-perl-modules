@@ -21,6 +21,7 @@ masterToken: passToSensor
 
 logicServicesSearchingFrequency: 5
 logicServicesTrackingFrequency: 7
+workerPeriod: 200
 
 #I am interested only in those sensors
 trackedSensors:
