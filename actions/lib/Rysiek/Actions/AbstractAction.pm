@@ -14,6 +14,8 @@ package Rysiek::Actions::AbstractAction 0.1{
 
 	my $trackedMaster: shared;
 	my $q = Thread::Queue->new();
+	
+	#TODO - requests processor and master's tracker could be put into 1 thread
 
 
 	my $configExt = '.yml';

@@ -15,8 +15,6 @@ package Rysiek::Master 0.01 {
   use YAML::Tiny;
   use Time::HiRes qw/ time sleep /;
 
-  my $sensors : shared;
-  my $subscribedSensors : shared;
   our $zeroconfServiceLink = "";
   my $getQ  = Thread::Queue->new();
   my $postQ = Thread::Queue->new();
@@ -41,6 +39,10 @@ package Rysiek::Master 0.01 {
     my %emptyHash3 : shared = ();
     $self->{logicServices} = \%emptyHash3;
 
+    share( $self->{sensorState} );
+    my %emptyHash4 : shared = ();
+    $self->{sensorState} = \%emptyHash4;
+
     $self->initPaths;
     $self->initAvahi;
     $self->initWorkerThread;
@@ -57,7 +59,7 @@ package Rysiek::Master 0.01 {
       sub {
         $| = 1;
         sleep 5;
-        my ( $lastWorkerStart, $lastSensorTrackTime, $lastLogicTrackTime )= (time, time, 0);
+        my ( $lastWorkerStart, $lastSensorTrackTime, $lastLogicTrackTime ) = ( time, time, 0 );
         my $sensorsUpdateF   = config->{sensorsUpdateFrequency};
         my $logicServUpdateF = config->{logicServicesSearchingFrequency};
 
@@ -84,11 +86,12 @@ package Rysiek::Master 0.01 {
           my $workerPeriod = config->{workerPeriod};
           if ( $elasped < $workerPeriod ) {
             my $timeToSleep = ( $workerPeriod - $elasped ) / 1000;
-#            say "time to sleep is: $timeToSleep s";
+
+            #            say "time to sleep is: $timeToSleep s";
             sleep($timeToSleep);
           }
         }
-        }
+      }
     );
     say "detaching worker";
     $worker->detach();
@@ -264,6 +267,27 @@ package Rysiek::Master 0.01 {
                   $self->{logicServices}{$availableProc}          = \%emptyHash3;
                   $self->{logicServices}{$availableProc}{address} = $address;
                   $self->{logicServices}{$availableProc}{port}    = $port;
+
+                  #now send him current state of the sensors
+                  {
+                    lock( $self->{sensorState} );
+                    say "updating $availableProc with current state of all sensors";
+                    foreach my $sensorName ( keys %{ $self->{sensorState} } ) {
+                      my $senVal = $self->{sensorState}{$sensorName};
+                      my $sValUrl =
+                          "http://$address:$port/processors/$availableProc/"
+                        . $sensorName . "/"
+                        . $senVal
+                        . "?user="
+                        . config->{masterName}
+                        . "&token="
+                        . config->{logicServicesTokens}->{$availableProc};
+
+                      say("url is $sValUrl");
+                      debug("Queueing a POST request to  $availableProc using url: $sValUrl");
+                      $postQ->enqueue($sValUrl);
+                    }
+                  }
                 }
                 elsif ( defined $subs && $subs eq "false" ) {
                   say "unable to subscribe to $availableProc";
@@ -302,8 +326,16 @@ package Rysiek::Master 0.01 {
       if ( $self->authorizeSensor ) {
         debug("##########################################################################");
         debug( "Collected value from sensor: " . params->{sensor} . ", value=" . params->{value} );
+
+        {
+          lock( $self->{sensorState} );
+          $self->{sensorState}{ params->{sensor} } = params->{value};
+        }
+
         {
           lock( $self->{logicServices} );
+          my $servicesToNotify = keys %{$self->{logicServices}};
+          debug("Logic services to notify: $servicesToNotify");
 
           foreach my $serviceName ( keys %{ $self->{logicServices} } ) {
             my $port    = $self->{logicServices}{$serviceName}{port};
@@ -311,7 +343,7 @@ package Rysiek::Master 0.01 {
             if ( defined $port && defined $address ) {
 
               my $server_endpoint =
-                  "http://$address:$port/processors/logicService1/"
+                  "http://$address:$port/processors/$serviceName/"
                 . params->{sensor} . "/"
                 . params->{value}
                 . "?user="
@@ -325,11 +357,9 @@ package Rysiek::Master 0.01 {
             else {
               debug "logic service record defined but no address/port info present!";
             }
-
           }    #for logicServices
         }
       }
-
     };    #method
 
     #returns currently available actions

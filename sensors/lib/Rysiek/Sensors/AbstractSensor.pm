@@ -14,6 +14,8 @@ package Rysiek::Sensors::AbstractSensor 0.1{
 
   my $configExt = '.yml';
   my $q = Thread::Queue->new();
+  
+  #TODO master monitor and http request handler should be put into 1 thread. But sensors can have their own threads like now
 
   has "port" => (
     is  => "ro",
