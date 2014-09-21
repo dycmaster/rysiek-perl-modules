@@ -358,49 +358,51 @@ package Rysiek::Master 0.01{
           #get the list of my processors
           my $myProcessors = $self->checkMyProcessors;
           my $yaml = YAML::Tiny->read_string($res);
+          if (defined $yaml->[0]){
 
-          foreach my $availableProc (keys $yaml->[0]){
-            next unless $availableProc ~~ $myProcessors;
+            foreach my $availableProc (keys $yaml->[0]){
+              next unless $availableProc ~~ $myProcessors;
 
-            my $address = $yaml->[0]->{$availableProc}{address};
-            my $port = $yaml->[0]->{$availableProc}{port};
-            if(defined $address && defined $port){
+              my $address = $yaml->[0]->{$availableProc}{address};
+              my $port = $yaml->[0]->{$availableProc}{port};
+              if(defined $address && defined $port){
 
-              my $user = config->{masterName};
-              my $token = config->{logicServicesTokens}{$availableProc};
-              my $yesNo = "http://".$address.":".$port.
-              "/processors/".$availableProc. "/subscribed?user="
-              .$user."&token=$token";
+                my $user = config->{masterName};
+                my $token = config->{logicServicesTokens}{$availableProc};
+                my $yesNo = "http://".$address.":".$port.
+                "/processors/".$availableProc. "/subscribed?user="
+                .$user."&token=$token";
 
-              my $alreadySubscribed = LWP::Simple::get($yesNo);
-              if(defined $alreadySubscribed 
-                && $alreadySubscribed ne "true"){
-                say "not subscribed yet to logic processor: $availableProc";
-                my $myPort= config->{port};
+                my $alreadySubscribed = LWP::Simple::get($yesNo);
+                if(defined $alreadySubscribed 
+                  && $alreadySubscribed ne "true"){
+                  say "not subscribed yet to logic processor: $availableProc";
+                  my $myPort= config->{port};
 
-                my $subscribe = "http://".$address.":".$port.
-                "/processors/".$availableProc. "/subscribe?user="
-                .$user."&token=$token&port=$myPort";
+                  my $subscribe = "http://".$address.":".$port.
+                  "/processors/".$availableProc. "/subscribe?user="
+                  .$user."&token=$token&port=$myPort";
 
-                my $subs = LWP::Simple::get($subscribe);
-                if(defined $subs && $subs eq "true"){
-                  say "subscribed ok";
+                  my $subs = LWP::Simple::get($subscribe);
+                  if(defined $subs && $subs eq "true"){
+                    say "subscribed ok";
+                    my %emptyHash3: shared = ();
+                    $self->{logicServices}{$availableProc} = \%emptyHash3;
+                    $self->{logicServices}{$availableProc}{address}=$address;
+                    $self->{logicServices}{$availableProc}{port}=$port;
+                  }elsif(defined $subs && $subs eq "false"){
+                    say "unable to subscribe";
+                  }else{
+                    say "$availableProc is visible in the zeroconf service but is not reachable!";
+                  }
+                }elsif(defined $alreadySubscribed){
                   my %emptyHash3: shared = ();
                   $self->{logicServices}{$availableProc} = \%emptyHash3;
                   $self->{logicServices}{$availableProc}{address}=$address;
                   $self->{logicServices}{$availableProc}{port}=$port;
-                }elsif(defined $subs && $subs eq "false"){
-                  say "unable to subscribe";
                 }else{
                   say "$availableProc is visible in the zeroconf service but is not reachable!";
                 }
-              }elsif(defined $alreadySubscribed){
-                my %emptyHash3: shared = ();
-                $self->{logicServices}{$availableProc} = \%emptyHash3;
-                $self->{logicServices}{$availableProc}{address}=$address;
-                $self->{logicServices}{$availableProc}{port}=$port;
-              }else{
-                say "$availableProc is visible in the zeroconf service but is not reachable!";
               }
             }
           }
