@@ -3,6 +3,7 @@ log: 'debug'
 appname: "master"
 charset: "UTF-8"
 serializer: YAML
+logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
 
 sensorService: '_nufw._tcp'
 masterService: '_islc._tcp'

@@ -3,3 +3,8 @@ log: 'debug'
 appname: "sensors"
 charset: "UTF-8"
 serializer: YAML
+logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
+
+workerPeriod: 200
+masterCheckerFrequency: 5
+

@@ -153,14 +153,14 @@ package Rysiek::Master 0.01 {
             if ( defined $address && defined $port ) {
               my $userName  = config->{masterName};
               my $userToken = config->{masterToken};
+              my $myPort       = config->{port};
               my $yesNoLink =
-"http://$address:$port/sensors/$trackedSensor/subscribed?user=$userName&token=$userToken";
+"http://$address:$port/sensors/$trackedSensor/subscribed?user=$userName&token=$userToken&port=$myPort";
 
               my $alreadySubs = LWP::Simple::get($yesNoLink);
 
               if ( defined $alreadySubs && $alreadySubs ne "1" ) {
                 say "not subscribed yet to $trackedSensor";
-                my $myPort       = config->{port};
                 my $ua           = LWP::UserAgent->new;
                 my $subscribeUrl = "http://$address:$port/sensors/$trackedSensor/subscribe";
                 my $res          = $ua->request(

@@ -5,4 +5,4 @@ show_errors:  1
 warnings: 1
 
 sensors:  
-  - UserHomeWifi
+  - SoundCardSensor

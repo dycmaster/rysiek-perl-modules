@@ -1,5 +1,3 @@
-mastersCheckFrequency: 6
-masterRemoveThreshold: 10
 constantMeasureFrequency: 3
 
 local: 1

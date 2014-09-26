@@ -3,6 +3,7 @@ log: 'debug'
 appname: "actions"
 charset: "UTF-8"
 serializer: YAML
+logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
 
 unitIdentifiers:
         sensor: '_nufw._tcp' 

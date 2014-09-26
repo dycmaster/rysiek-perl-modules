@@ -7,15 +7,12 @@ package Rysiek::Sensors::AbstractSensor 0.1{
   use Data::Dumper;
   use threads;
   use threads::shared;
-  use HTTP::Request::Common;
-  use LWP::UserAgent;
-  use Thread::Queue;
-  use LWP::Simple qw(!get);
+  use Time::HiRes qw/ time /;
+  use Rysiek::Sensors;
+
 
   my $configExt = '.yml';
-  my $q = Thread::Queue->new();
-  
-  #TODO master monitor and http request handler should be put into 1 thread. But sensors can have their own threads like now
+
 
   has "port" => (
     is  => "ro",
@@ -57,71 +54,26 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     my %emptyHash : shared = ();
     $self->{registeredMasters} = \%emptyHash;
 
-    $self->initAvahi;
-    debug ("Avahi done for ". ref $self);
     $self->initPaths;
     debug ("Paths done for ". ref $self);
-    $self->initMastersMonitor;
-    debug ("init masters monitor done for ". ref $self);
+
+    $self->initAvahi;
+    debug ("Avahi done for ". ref $self);
+
     $self->initSensing;
     debug ("initSensing done for ". ref $self);
 
-    &handleRequestsFromQueue;
-    debug("POST requests handler initiated");
   }
+
 
   sub initSensing{
     my $self = shift;
     my @Params = ($self);
     my $name = $self->name;
     debug("sensor $name is entering sensingLoop");
-    my $thr = threads->create(\&sensingLoop, @Params);
+    my $thr = threads->create(sub{$self->constantMeasurements});
+    debug "sensor $name will now get detached";
     $thr->detach();
-  }
-
-  sub sensingLoop{
-    my @InboundParameters = @_;
-    my $self = $InboundParameters[0];
-    my $name = $self->name;
-    debug("sensor $name is entering constantMeasurements");
-    $self->constantMeasurements();
-  }
-
-  #if didn't receive "register" from a master for more than x seconds - remove it
-  sub initMastersMonitor{
-    my $self = shift;
-    my @Params = ($self);
-    my $thr = threads->create(\&checkMasters, @Params);
-    $thr->detach();
-  }
-
-  sub checkMasters{
-    my @InboundParameters = @_;
-    my $self = $InboundParameters[0];
-    $|=1;
-
-    while(1){
-      {
-        lock($self->{registeredMasters});
-        my $size = keys $self->{registeredMasters};
-        # debug($self->name . "has masters: " . $size);
-
-        foreach my $master (keys $self->{registeredMasters}){
-          my $masterIp = $self->{registeredMasters}{$master}{ip};
-          my $masterPort = $self->{registeredMasters}{$master}{port};
-
-          my $url = "http://". $masterIp .":". $masterPort ."/masters/". $master ."/ping";
-          my $res = LWP::Simple::get($url);
-
-          if(!defined $res){
-            say("Master ". $master ." is not available and will be removed!");
-            delete $self->{registeredMasters}{$master};
-          }
-        }
-      }
-
-      sleep $self->sensorConfig()->[0]->{"mastersCheckFrequency"};
-    }
   }
 
 
@@ -172,9 +124,11 @@ package Rysiek::Sensors::AbstractSensor 0.1{
           %row = (
             ip => request->remote_address,
             port => params->{port},
-            time => time
+            time => time,
+            name => params->{user}
           );
           $self->{registeredMasters}{params->{user}} = \%row;
+          Rysiek::Sensors::addMasterToTrack(\%row);
         }
         debug (params->{user}." subscribed succesfully to  sensor $mName ");
         debug("will send current sensor value to Master");
@@ -183,7 +137,6 @@ package Rysiek::Sensors::AbstractSensor 0.1{
         say "ok";
       }
     };
-
     1;
   }
 
@@ -191,7 +144,8 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     my $self = shift;
     {
       lock($self->{registeredMasters});
-      if(params->{user} ~~ $self->{registeredMasters} ){
+      if(params->{user} ~~ $self->{registeredMasters} 
+        && $self->{registeredMasters}{params->{user}}{port} == params->{port} ){
         return 1;
       }else{
         return 0;
@@ -241,11 +195,11 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     my $self = shift;
     my $val  = shift;
     my $name = $self->name;
-    my $mSize = keys $self->{registeredMasters};
     $|=1;
-    say("sensor $name will update masters with its change. Current masters: $mSize");
     {
       lock($self->{registeredMasters});
+      my $mSize = keys $self->{registeredMasters};
+      say("sensor $name will update masters with its change. Current masters: $mSize");
 
       foreach my $master (keys $self->{registeredMasters}){
         my $masterIp = $self->{registeredMasters}{$master}{ip};
@@ -254,40 +208,13 @@ package Rysiek::Sensors::AbstractSensor 0.1{
 
         my $server_endpoint = "http://". $masterIp .":". $masterPort ."/masters/". $master ."/value";
         my $content = [sensor => ($name), value => $val, user => $name, token=> $myToken];
-        my %reqData = (url=> $server_endpoint, content=> $content, sender=>$name);
+        my %reqData = (url=> $server_endpoint, content=> $content, sender=>$name, 
+          master=>$master, ip=>$masterIp, port=>$masterPort);
 
-        $q->enqueue(\%reqData);
+        $Rysiek::Sensors::postQ->enqueue(\%reqData);
       }
     }
-
   }
-
-  sub handleRequestsFromQueue{
-    my $thr = threads->create(
-      sub{
-        $| =1;
-        while(defined( my $item = $q->dequeue())){
-          my $url = $item->{url};
-          my $content = $item->{content};
-          my $sender = $item->{sender};
-          say("Processing request from $sender: $url");
-
-          my $ua = LWP::UserAgent->new;
-          my $res = $ua->request(POST  "$url", $content  );
-
-          # Check the outcome of the response
-          if (!$res->is_success) {
-            say("unable to send $url");
-          }else{
-            say("request: $url from $sender done OK" );
-          }
-        }
-      }
-    );
-    $thr->detach();
-    return 1;
-  }
-
 
   true;
 }
