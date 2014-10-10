@@ -15,7 +15,7 @@ package Rysiek::Master 0.01 {
   use YAML::Tiny;
   use Time::HiRes qw/ time sleep /;
 
-  our $zeroconfServiceLink = "";
+  our $zeroconfServiceLink: shared = "";
   my $getQ  = Thread::Queue->new();
   my $postQ = Thread::Queue->new();
 
@@ -59,6 +59,7 @@ package Rysiek::Master 0.01 {
       sub {
         $| = 1;
         sleep 5;
+        debug "worker is rolling";
         my ( $lastWorkerStart, $lastSensorTrackTime, $lastLogicTrackTime ) = ( time, time, 0 );
         my $sensorsUpdateF   = config->{sensorsUpdateFrequency};
         my $logicServUpdateF = config->{logicServicesSearchingFrequency};
@@ -86,8 +87,6 @@ package Rysiek::Master 0.01 {
           my $workerPeriod = config->{workerPeriod};
           if ( $elasped < $workerPeriod ) {
             my $timeToSleep = ( $workerPeriod - $elasped ) / 1000;
-
-            #            say "time to sleep is: $timeToSleep s";
             sleep($timeToSleep);
           }
         }
@@ -131,186 +130,157 @@ package Rysiek::Master 0.01 {
 
   sub findAndTrackSensorsViaZeroconfService {
     my $self = shift;
-
-    my $zeroconfServiceLink = $self->getBasicAvahiServiceLink;
-    $zeroconfServiceLink = $zeroconfServiceLink . "service/sensor";
-    my $zeroconfRes = LWP::Simple::get($zeroconfServiceLink);
+    my $avSensors = $self->findUnits(config->{sensorService});
+    my $trackedSensors = $self->checkWhatITrack;
 
     {
       lock( $self->{subscribedSensors} );
       %{ $self->{subscribedSensors} } = ();
+      my $userName  = config->{masterName};
+      my $userToken = config->{masterToken};
+      my $myPort       = config->{port};
 
-      if ( defined $zeroconfRes ) {
-        my $trackedSensors = $self->checkWhatITrack;
-        my $sensorsYaml    = YAML::Tiny->read_string($zeroconfRes);
+      foreach my $trackedSensor (@$trackedSensors) {
+        next unless defined $avSensors->{$trackedSensor};
 
-        if ( defined $sensorsYaml->[0] ) {
-          foreach my $trackedSensor (@$trackedSensors) {
-            next unless defined $sensorsYaml->[0]->{$trackedSensor};
+        my $address = $avSensors->{$trackedSensor}{address};
+        my $port    = $avSensors->{$trackedSensor}{port};
+        next unless (defined $address && defined $port);
+        my $yesNoLink =
+        "http://$address:$port/sensors/$trackedSensor/subscribed?user=$userName&token=$userToken&port=$myPort";
+        my $alreadySubs = LWP::Simple::get($yesNoLink);
 
-            my $address = $sensorsYaml->[0]->{$trackedSensor}{address};
-            my $port    = $sensorsYaml->[0]->{$trackedSensor}{port};
-            if ( defined $address && defined $port ) {
-              my $userName  = config->{masterName};
-              my $userToken = config->{masterToken};
-              my $myPort       = config->{port};
-              my $yesNoLink =
-"http://$address:$port/sensors/$trackedSensor/subscribed?user=$userName&token=$userToken&port=$myPort";
+        if ( defined $alreadySubs && $alreadySubs ne "1" ) {
+          say "not subscribed yet to $trackedSensor";
+          my $subscribeUrl = "http://$address:$port/sensors/$trackedSensor/subscribe";
+          my $ua           = LWP::UserAgent->new;
+          my $res          = $ua->request(
+            POST "$subscribeUrl",
+            [
+              user  => $userName,
+              token => $userToken,
+              port  => $myPort
+            ]
+          );
 
-              my $alreadySubs = LWP::Simple::get($yesNoLink);
-
-              if ( defined $alreadySubs && $alreadySubs ne "1" ) {
-                say "not subscribed yet to $trackedSensor";
-                my $ua           = LWP::UserAgent->new;
-                my $subscribeUrl = "http://$address:$port/sensors/$trackedSensor/subscribe";
-                my $res          = $ua->request(
-                  POST "$subscribeUrl",
-                  [
-                    user  => $userName,
-                    token => $userToken,
-                    port  => $myPort
-                  ]
-                );
-
-                if ( defined $res && $res->is_success() ) {
-                  say "subscribed ok to $trackedSensor";
-                  my %emptyHash2 : shared = ();
-                  $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
-                  $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
-                  $self->{subscribedSensors}{$trackedSensor}{address} = $address;
-                }
-                elsif ( defined $res ) {
-                  say "unable to subscribe to $trackedSensor";
-                }
-                else {
-                  say "$trackedSensor is visible in the zeroconf service but is not reachable!";
-                }
-              }
-              elsif ( defined $alreadySubs && $alreadySubs eq "1" ) {
-                my %emptyHash2 : shared = ();
-                $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
-                $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
-                $self->{subscribedSensors}{$trackedSensor}{address} = $address;
-              }
-              else {
-                say "$trackedSensor is visible in the zeroconf service but is not reachable!";
-              }
-            }
+          if ( defined $res && $res->is_success() ) {
+            say "subscribed ok to $trackedSensor";
+            my %emptyHash2 : shared = ();
+            $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
+            $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
+            $self->{subscribedSensors}{$trackedSensor}{address} = $address;
           }
-
+          elsif ( defined $res ) {
+            say "unable to subscribe to $trackedSensor";
+          }
+          else {
+            say "$trackedSensor is visible in the zeroconf service but is not reachable!";
+          }
         }
-      }
-      else {
-        say "No reply from zeroconfService, even though it looks available";
+        elsif ( defined $alreadySubs && $alreadySubs eq "1" ) {
+          my %emptyHash2 : shared = ();
+          $self->{subscribedSensors}{$trackedSensor}          = \%emptyHash2;
+          $self->{subscribedSensors}{$trackedSensor}{port}    = $port;
+          $self->{subscribedSensors}{$trackedSensor}{address} = $address;
+        }
+        else {
+          say "$trackedSensor is visible in the zeroconf service but is not reachable!";
+        }
       }
     }
   }
 
   sub findAndStoreLogicServicesViaZeroconfService {
     my $self = shift;
-
-    my $zeroconfLink = $self->getBasicAvahiServiceLink;
-    $zeroconfLink = $zeroconfLink . "service/processor";
-    my $res = LWP::Simple::get($zeroconfLink);
+    my $avProcessors=$self->findUnits(config->{processorService});
+    my $myProcessors = $self->checkMyProcessors;
 
     {
       lock( $self->{logicServices} );
       %{ $self->{logicServices} } = ();
 
-      if ( defined $res ) {
+      foreach my $availableProc ( keys %{$avProcessors} ) {
+        next unless $availableProc ~~ $myProcessors;
 
-        #get the list of my processors
-        my $myProcessors = $self->checkMyProcessors;
-        my $yaml         = YAML::Tiny->read_string($res);
-        if ( defined $yaml->[0] ) {
+        my $address = $avProcessors->{$availableProc}{address};
+        my $port    = $avProcessors->{$availableProc}{port};
+        next unless (defined $address && defined $port);
 
-          foreach my $availableProc ( keys $yaml->[0] ) {
-            next unless $availableProc ~~ $myProcessors;
+        my $user  = config->{masterName};
+        my $token = config->{logicServicesTokens}{$availableProc};
+        my $yesNo =
+        "http://"
+        . $address . ":"
+        . $port
+        . "/processors/"
+        . $availableProc
+        . "/subscribed?user="
+        . $user
+        . "&token=$token";
 
-            my $address = $yaml->[0]->{$availableProc}{address};
-            my $port    = $yaml->[0]->{$availableProc}{port};
-            if ( defined $address && defined $port ) {
+        my $alreadySubscribed = LWP::Simple::get($yesNo);
+        if ( defined $alreadySubscribed
+          && $alreadySubscribed ne "true" )
+        {
+          say "not subscribed yet to logic processor: $availableProc";
+          my $myPort = config->{port};
 
-              my $user  = config->{masterName};
-              my $token = config->{logicServicesTokens}{$availableProc};
-              my $yesNo =
-                  "http://"
-                . $address . ":"
-                . $port
-                . "/processors/"
-                . $availableProc
-                . "/subscribed?user="
-                . $user
-                . "&token=$token";
+          my $subscribe =
+          "http://"
+          . $address . ":"
+          . $port
+          . "/processors/"
+          . $availableProc
+          . "/subscribe?user="
+          . $user
+          . "&token=$token&port=$myPort";
 
-              my $alreadySubscribed = LWP::Simple::get($yesNo);
-              if ( defined $alreadySubscribed
-                && $alreadySubscribed ne "true" )
-              {
-                say "not subscribed yet to logic processor: $availableProc";
-                my $myPort = config->{port};
+          my $subs = LWP::Simple::get($subscribe);
+          if ( defined $subs && $subs eq "true" ) {
+            say "subscribed ok to $availableProc";
+            my %emptyHash3 : shared = ();
+            $self->{logicServices}{$availableProc}          = \%emptyHash3;
+            $self->{logicServices}{$availableProc}{address} = $address;
+            $self->{logicServices}{$availableProc}{port}    = $port;
 
-                my $subscribe =
-                    "http://"
-                  . $address . ":"
-                  . $port
-                  . "/processors/"
-                  . $availableProc
-                  . "/subscribe?user="
-                  . $user
-                  . "&token=$token&port=$myPort";
+            #now send him current state of the sensors
+            {
+              lock( $self->{sensorState} );
+              my $updSize = keys %{ $self->{sensorState} };
+              say "updating $availableProc with current state of all sensors. Values to send: $updSize";
+              foreach my $sensorName ( keys %{ $self->{sensorState} } ) {
+                my $senVal = $self->{sensorState}{$sensorName};
+                my $sValUrl =
+                "http://$address:$port/processors/$availableProc/"
+                . $sensorName . "/"
+                . $senVal
+                . "?user="
+                . config->{masterName}
+                . "&token="
+                . config->{logicServicesTokens}->{$availableProc};
 
-                my $subs = LWP::Simple::get($subscribe);
-                if ( defined $subs && $subs eq "true" ) {
-                  say "subscribed ok to $availableProc";
-                  my %emptyHash3 : shared = ();
-                  $self->{logicServices}{$availableProc}          = \%emptyHash3;
-                  $self->{logicServices}{$availableProc}{address} = $address;
-                  $self->{logicServices}{$availableProc}{port}    = $port;
-
-                  #now send him current state of the sensors
-                  {
-                    lock( $self->{sensorState} );
-                    say "updating $availableProc with current state of all sensors";
-                    foreach my $sensorName ( keys %{ $self->{sensorState} } ) {
-                      my $senVal = $self->{sensorState}{$sensorName};
-                      my $sValUrl =
-                          "http://$address:$port/processors/$availableProc/"
-                        . $sensorName . "/"
-                        . $senVal
-                        . "?user="
-                        . config->{masterName}
-                        . "&token="
-                        . config->{logicServicesTokens}->{$availableProc};
-
-                      say("url is $sValUrl");
-                      debug("Queueing a POST request to  $availableProc using url: $sValUrl");
-                      $postQ->enqueue($sValUrl);
-                    }
-                  }
-                }
-                elsif ( defined $subs && $subs eq "false" ) {
-                  say "unable to subscribe to $availableProc";
-                }
-                else {
-                  say "$availableProc is visible in the zeroconf service but is not reachable!";
-                }
-              }
-              elsif ( defined $alreadySubscribed ) {
-                my %emptyHash3 : shared = ();
-                $self->{logicServices}{$availableProc}          = \%emptyHash3;
-                $self->{logicServices}{$availableProc}{address} = $address;
-                $self->{logicServices}{$availableProc}{port}    = $port;
-              }
-              else {
-                say "$availableProc is visible in the zeroconf service but is not reachable!";
+                say("url is $sValUrl");
+                debug("Queueing a POST request to  $availableProc using url: $sValUrl");
+                $postQ->enqueue($sValUrl);
               }
             }
           }
+          elsif ( defined $subs && $subs eq "false" ) {
+            say "unable to subscribe to $availableProc";
+          }
+          else {
+            say "$availableProc is visible in the zeroconf service but is not reachable!";
+          }
         }
-      }
-      else {
-        say "No response from the zeroconf service!";
+        elsif ( defined $alreadySubscribed ) {
+          my %emptyHash3 : shared = ();
+          $self->{logicServices}{$availableProc}          = \%emptyHash3;
+          $self->{logicServices}{$availableProc}{address} = $address;
+          $self->{logicServices}{$availableProc}{port}    = $port;
+        }
+        else {
+          say "$availableProc is visible in the zeroconf service but is not reachable!";
+        }
       }
     }
   }
@@ -343,13 +313,13 @@ package Rysiek::Master 0.01 {
             if ( defined $port && defined $address ) {
 
               my $server_endpoint =
-                  "http://$address:$port/processors/$serviceName/"
-                . params->{sensor} . "/"
-                . params->{value}
-                . "?user="
-                . config->{masterName}
-                . "&token="
-                . config->{logicServicesTokens}->{$serviceName};
+              "http://$address:$port/processors/$serviceName/"
+              . params->{sensor} . "/"
+              . params->{value}
+              . "?user="
+              . config->{masterName}
+              . "&token="
+              . config->{logicServicesTokens}->{$serviceName};
 
               debug("Queueing a POST request to  $serviceName using url: $server_endpoint");
               $postQ->enqueue($server_endpoint);
@@ -367,7 +337,7 @@ package Rysiek::Master 0.01 {
     get "/masters/" . $mName . "/action" => sub {
       if ( $self->authorizeActionUser ) {
 
-        my $actions = $self->findAvahiUnits( config->{actionService} );
+        my $actions = $self->findUnits( config->{actionService} );
 
         foreach my $action ( keys %{$actions} ) {   #this is how to call that action via this master
           $actions->{$action}{url} = "/masters/$mName/action/$action";
@@ -383,7 +353,7 @@ package Rysiek::Master 0.01 {
     get "/masters/" . $mName . "/action/*" => sub {
       if ( $self->authorizeActionUser ) {
         my ($action) = splat;
-        my $actions  = $self->findAvahiUnits( config->{actionService} );
+        my $actions  = $self->findUnits( config->{actionService} );
         my $currUser = params->{user};
         debug("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%");
         debug("Handling a request from $currUser to fire an action $action");
@@ -395,7 +365,7 @@ package Rysiek::Master 0.01 {
 
         my $actionToken = config->{actionsCredentials}{$action};
         my $url =
-          "http://$actionAddress:$actionPort/actions/$action/do?user=$mName&token=$actionToken";
+        "http://$actionAddress:$actionPort/actions/$action/do?user=$mName&token=$actionToken";
 
         my $addParamsUrl;
         if ( defined params->{addParams} ) {
@@ -417,7 +387,41 @@ package Rysiek::Master 0.01 {
       return "ok";
     };
 
+    #a zeroconf service offers its services via this link
+    post "/masters/" . $mName  . "/zeroconf" => sub {
+      if($self->authorizeZeroconfService){
+        return "port not defined" unless defined params->{port};
+
+        my $ip = request->remote_address;
+        my $port = params->{port};
+        my $name = params->{user};
+        my $link = "http://$ip:$port/zeroconf/$name/";
+        my $pingRes = LWP::Simple::get( $link . "ping" );
+        {
+          lock ($zeroconfServiceLink);
+          $zeroconfServiceLink="";
+          if ( defined $pingRes && $pingRes ne "pong" ) {
+            debug "zeroconf service alive but doesn't reply properly!";
+          }
+          elsif ( !defined $pingRes ) {
+            debug("zeroconf service not available with link $link");
+          }else{
+            if( ! defined $zeroconfServiceLink || $zeroconfServiceLink eq "" ||
+            $zeroconfServiceLink ne $link){
+              debug("link $link replies to ping and it will be new zeroconf link");
+              $zeroconfServiceLink=$link;
+            }
+          }
+        }
+      }
+    };
+
     1;
+  }
+
+  sub authorizeZeroconfService{
+    my $self = shift;
+    $self->checkCredentials("knownZeroconfs", "zeroconfTokens");
   }
 
   sub authorizeActionUser {
@@ -456,31 +460,10 @@ package Rysiek::Master 0.01 {
   }
 
   sub getBasicAvahiServiceLink {
-    my $self = shift;
-
-    my $pingRes = LWP::Simple::get( $zeroconfServiceLink . "ping" );
-    if ( defined $pingRes && $pingRes ne "pong" ) {
-      say "zeroconf service alive but doesn't reply properly!";
+    {
+      lock $zeroconfServiceLink;
+      return $zeroconfServiceLink;
     }
-    elsif ( !defined $pingRes ) {
-      say("zeroconf service not available with link $zeroconfServiceLink . Obtaining new link..");
-
-      #this runs a new process for a while so it's better to avoid calling it frequently
-      my $avahiResolverData = $self->findAvahiUnits( config->{avahiService} );
-      if ( defined $avahiResolverData && ( keys %$avahiResolverData > 0 ) ) {
-        my $avName = ( sort keys %$avahiResolverData )[0];
-        my $avData = $avahiResolverData->{$avName};
-        my $host   = $avData->{address};
-        my $port   = $avData->{port};
-
-        my $link = "http://$host:$port/zeroconf/$avName/";
-        $zeroconfServiceLink = $link;
-      }
-      else {
-        $zeroconfServiceLink = "";
-      }
-    }
-    return $zeroconfServiceLink;
   }
 
   sub getPort {
@@ -500,70 +483,35 @@ package Rysiek::Master 0.01 {
       or die "couldn't make a Publisher object";
     my $service = $publisher->publish(
       name => config->{masterAvahiName},
-      type => config->{masterService},
+      type => config->{masterAvahiType},
       port => config->{port},
     );
     1;
   }
 
-  sub findAvahiUnits {
-    my $self              = shift;
-    my $serviceTypeToFind = $_[0];
+  #all services should be searched via this method
+  sub findUnits{
+    my $self = shift;
+    my $toFind = shift;
+    my $zeroconfLink = &getBasicAvahiServiceLink;
+    debug "zeroconf not defined!" unless defined $zeroconfLink;
+    my $link = $zeroconfLink . "service/$toFind";
+    my $zeroconfRes = LWP::Simple::get($link);
 
-    #say "service type to find is: $serviceTypeToFind";
+    my %result=();
+    if ( defined $zeroconfRes ) {
+      my $returnedYaml    = YAML::Tiny->read_string($zeroconfRes);
 
-    my @value = qx(avahi-browse -cr $serviceTypeToFind);
-
-    my ( $inSensor, $hasName, $hasAddress, $hasPort );
-    my ( $sensorName, $sensorAddress, $sensorPort );
-
-    my %sensorsLoc : shared;
-
-    foreach (@value) {
-
-      if ( !$inSensor ) {
-        $inSensor = 1 if /^=/;
-      }
-
-      if ($inSensor) {
-        if ( !$sensorName ) {
-          if (/=\s+\S+\s+\S+\s+(\S+)/xi) {
-            $sensorName = $1;
-            next;
-          }
+      if ( defined $returnedYaml->[0] ) {
+        foreach my $unit (keys %{$returnedYaml->[0]}){
+          my $address = $returnedYaml->[0]->{$unit}{address};
+          my $port    = $returnedYaml->[0]->{$unit}{port};
+          $result{$unit}={address=>$address, port=> $port };
         }
-
-        if ($sensorName) {
-          if ( !$sensorAddress ) {
-            if (/\s+address\s+=\s+\[(\S+)\]/xi) {
-              $sensorAddress = $1;
-              next;
-            }
-          }
-        }
-
-        if ( $sensorName && $sensorAddress ) {
-          if ( !$sensorPort ) {
-            if (/\s+port\s+=\s+\[(\S+)\]/xi) {
-              $sensorPort = $1;
-            }
-          }
-        }
-
-      }
-
-      if ( $sensorName && $sensorAddress && $sensorPort ) {
-
-        share( $sensorsLoc{$sensorName} );
-        my %row : shared;
-        %row = ( address => $sensorAddress, port => $sensorPort );
-        $sensorsLoc{$sensorName} = \%row;
-
-        $sensorName = $sensorAddress = $sensorPort = 0;
       }
     }
-
-    return \%sensorsLoc;
+    #say " found units of type $toFind are:". Dumper(\%result) ;
+    return \%result;
   }
 
   sub checkWhatITrack {

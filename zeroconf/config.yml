@@ -7,6 +7,7 @@ logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
 
 
 myName: zeroconfService
+myToken: token
 trackingInterval: 20
 
 
@@ -19,4 +20,19 @@ unitIdentifiers:
         data: '_netangel._tcp'
         log: '_integral._tcp'
         avahi: '_krb524._udp'
+
+unitTypesToTrack:
+  - sensor
+  - master
+  - action
+  - processor
+  - avahi
+
+# this is to form the first part of a link when accessing a given type of a service
+serviceTypeLinks:
+        master: masters
+
+serviceTypesToOfferService:
+        - master
+
 

@@ -10,5 +10,6 @@ if [ ! -d "logs"  ]; then
 	mkdir logs;
 fi
 
-perl  bin/app.pl --environment $ENV &> logs/prod.log
+#perl  bin/app.pl --environment $ENV &> logs/prod.log
+perl  bin/app.pl --environment $ENV 
 

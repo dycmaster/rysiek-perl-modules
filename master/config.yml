@@ -5,18 +5,18 @@ charset: "UTF-8"
 serializer: YAML
 logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
 
-sensorService: '_nufw._tcp'
-masterService: '_islc._tcp'
-actionService: '_venus._tcp'
-processorService: '_topx._tcp'
-uiService: '_unicontrol._tcp'
-dataService: '_netangel._tcp'
-logService: '_integral._tcp'
-avahiService: '_krb524._udp'
+sensorService: 'sensor'
+masterService: 'master'
+actionService: 'action'
+processorService: 'processor'
+uiService: 'ui'
+dataService: 'data'
+logService: 'log'
+avahiService: 'avahi'
 
 sensorsUpdateFrequency: 5
-subscribedSensorsTrackingFrequency: 10
 masterAvahiName: Master1
+masterAvahiType: '_islc._tcp'
 masterName: Master1
 masterToken: passToSensor
 
@@ -56,6 +56,12 @@ knownActionUsers:
 actionUsersTokens:
   logicService1: password
   actionService: password
+
+knownZeroconfs:
+  - zeroconfService
+
+zeroconfTokens:
+  zeroconfService: token
 
 
 #I  provide actions with those credentials
