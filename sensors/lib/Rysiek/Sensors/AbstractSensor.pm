@@ -10,9 +10,7 @@ package Rysiek::Sensors::AbstractSensor 0.1{
   use Time::HiRes qw/ time /;
   use Rysiek::Sensors;
 
-
   my $configExt = '.yml';
-
 
   has "port" => (
     is  => "ro",

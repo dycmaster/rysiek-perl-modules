@@ -10,6 +10,10 @@ package Rysiek::Zeroconf 0.01{
   use threads::shared;  
   use HTTP::Request::Common;
   use LWP::UserAgent;
+  use Thread::Queue;
+  use Time::HiRes qw/ time sleep /;
+
+  my $postQ = Thread::Queue->new();
 
   has "name" =>(
     is => "ro",
@@ -31,8 +35,8 @@ package Rysiek::Zeroconf 0.01{
 
     $self->initAvahi;
     debug("avahi initialized");
-    $self->initTrackingEngine;
-    debug("tracking engine is rolling");
+    $self->initWorkerThread;
+    debug("tacking engine is initialized");
     $self->initPaths;
     debug("paths initialized");
     return 1;
@@ -66,64 +70,92 @@ package Rysiek::Zeroconf 0.01{
     return 1;
   }
 
-  sub initTrackingEngine{
+  sub initWorkerThread{
     my $self = shift;
-    my @Params = ($self);
+    say "creating a worker thread";
+    my $worker = threads->create(
+      sub{
+        $|=1;
+        sleep 5;
+        debug "worker is rolling";
+        my ( $lastWorkerStart, $lastAvahiScanTime ) = ( time, time);
+        my $avahiScanF   = config->{avahiScanFrequency};
+        my $workerPeriod = config->{workerPeriod};
 
-    my $thr = threads->create(\&trackAvahiUnits, @Params);
-    $thr->detach();
+        while (1) {
+          $lastWorkerStart = time;
 
-    debug("trackingEngine started");
-    return 1;                
+          $self->handlePostFromQueue;
+
+          if ( time - $lastAvahiScanTime >= $avahiScanF ) {
+            $self->trackAvahiUnits;
+            $lastAvahiScanTime = time;
+          }
+
+          #sleep to not work too much
+          my $elasped = ( time - $lastWorkerStart ) * 1000;
+
+          #say "elasped is $elasped ms";
+          if ( $elasped < $workerPeriod ) {
+            my $timeToSleep = ( $workerPeriod - $elasped ) / 1000;
+            sleep($timeToSleep);
+          }
+        }
+      }
+    );
+    say"detaching worker";
+    $worker->detach();
+    return 1;
   }
 
+  #find services of certain types and notify them about your service so they can
+  #start using the zeroconf service
   sub trackAvahiUnits{
     $|=1;
-    my @InboundParams = @_;
-    my $self = $InboundParams[0];
+    my $self = shift;
     my $stuffToTrack =  config->{unitTypesToTrack};
     my $stuffToOfferService = config->{serviceTypesToOfferService};
 
-    while (1) {
-      {                                
-        lock($self->{units});                                
-        %{$self->{units}}=();
+    {                                
+      lock($self->{units});                                
+      %{$self->{units}}=();
 
-        foreach(@$stuffToTrack){
-          my $unitCode = config->{unitIdentifiers}{$_};
-          my $res =  $self->findAvahiUnits($unitCode);
-          my $resSize = keys %$res;
-          if ($resSize > 0) {
-            $self->{units}{$_} = $res ;                                                
-            if ($_ ~~ @$stuffToOfferService){
-              foreach my $foundSer (keys %$res){
-                my $linkBeg = config->{serviceTypeLinks}{$_};
-                my $link = "http://$res->{$foundSer}{address}:$res->{$foundSer}{port}/$linkBeg/$foundSer/zeroconf";
-                my $myPort=config->{port};
-                my $user = config->{myName};
-                my $token = config->{myToken};
-
-                my $ua = LWP::UserAgent->new;
-                my $res = $ua->request(POST "$link",
-                [
-                  user => $user,
-                  token => $token,
-                  port => $myPort
-                
-                ]);
-                if($res->is_success){
-                  say "notified $foundSer about my services..";
-                }else{
-                  say "unable to notify $foundSer about my services..";
-                }
-              }
+      foreach(@$stuffToTrack){
+        my $unitCode = config->{unitIdentifiers}{$_};
+        my $res =  $self->findAvahiUnits($unitCode);
+        my $resSize = keys %$res;
+        if ($resSize > 0) {
+          $self->{units}{$_} = $res ;                                                
+          if ($_ ~~ @$stuffToOfferService){
+            foreach my $foundSer (keys %$res){
+              my $linkBeg = config->{serviceTypeLinks}{$_};
+              my $link = "http://$res->{$foundSer}{address}:$res->{$foundSer}{port}/$linkBeg/$foundSer/zeroconf";
+              my $data = { user => config->{myName}, token => config->{myToken}
+                  , port => config->{port} };
+              my $linkAndObjects = { url => $link, data => $data };
+              $postQ->enqueue($linkAndObjects);
             }
           }
-          #say "unit type: $_, unit code: $unitCode, units found: $resSize";
         }
-      }                        
-      sleep(config->{trackingInterval})
-    }                
+        #say "unit type: $_, unit code: $unitCode, units found: $resSize";
+      }
+    }                        
+    return 1;
+  }
+
+  sub handlePostFromQueue{
+    while ( $postQ->pending() > 0 ) {
+      my $item = $postQ->dequeue();
+      say "Handling POST request $item->{url}";
+      my $ua  = LWP::UserAgent->new;
+      my $res = $ua->request( POST "$item->{url}", $item->{data} );
+      if ( $res->is_success ) {
+        say "POST request $item->{url} sent successfully";
+      }
+      else {
+        say "unable to send POST request $item->{url}";
+      }
+    }
     return 1;
   }
 
@@ -198,7 +230,6 @@ package Rysiek::Zeroconf 0.01{
 
     return \%sensorsLoc;
   }
-
 
   sub getPort {
     my $proto = getprotobyname("tcp");

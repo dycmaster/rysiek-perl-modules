@@ -11,12 +11,14 @@ package Rysiek::Actions::AbstractAction 0.1{
 	use LWP::UserAgent;
 	use LWP::Simple qw(!get);
 	use Thread::Queue;
+  use Time::HiRes qw/time sleep /;
 
 	my $trackedMaster: shared;
 	my $q = Thread::Queue->new();
+  our $zeroconfServiceLink: shared = "";
+
 	
 	#TODO - requests processor and master's tracker could be put into 1 thread
-
 
 	my $configExt = '.yml';
 
@@ -44,7 +46,6 @@ package Rysiek::Actions::AbstractAction 0.1{
 			my $config = YAML::Tiny->read($configPath);
 			$config;
 		}
-
 	);
 
 	sub printConfig {
@@ -71,14 +72,14 @@ package Rysiek::Actions::AbstractAction 0.1{
 		use Net::Rendezvous::Publish;
 		my $publisher = Net::Rendezvous::Publish->new
 			or die "couldn't make a Publisher object";
-
-		my $serviceType=config->{unitIdentifiers}{action};
-
+		my $serviceType=config->{actionServiceAvahiType};
+    debug"my avahi service type is $serviceType";
 		my $service = $publisher->publish(
 			name => $self->name,
-			type => config->{unitIdentifiers}{action},
+			type => $serviceType,
 			port => $self->port,
 		);
+    debug "Avahi published successfully";
 		return 1;
 	}
 
@@ -95,11 +96,41 @@ package Rysiek::Actions::AbstractAction 0.1{
 				return  $self->doAction;
 			}
 		};
-		debug("paths from superclass done");
 
+    post "/actions/" . $mName  . "/zeroconf" => sub {
+      if($self->authorizeZeroconfService){
+        return "port not defined" unless defined params->{port};
+
+        my $ip = request->remote_address;
+        my $port = params->{port};
+        my $name = params->{user};
+        my $link = "http://$ip:$port/zeroconf/$name/";
+
+        say"I will ping the zeroconf now using: $link";
+        my $pingRes = LWP::Simple::get( $link . "ping" );
+        say "pinged ok";
+        {
+          lock ($zeroconfServiceLink);
+          $zeroconfServiceLink="";
+          if ( defined $pingRes && $pingRes ne "pong" ) {
+            debug "zeroconf service alive but doesn't reply properly!";
+          }
+          elsif ( !defined $pingRes ) {
+            debug("zeroconf service not available with link $link");
+          }else{
+            if( ! defined $zeroconfServiceLink || $zeroconfServiceLink eq "" ||
+            $zeroconfServiceLink ne $link){
+              debug("link $link replies to ping and it will be new zeroconf link");
+              $zeroconfServiceLink=$link;
+            }
+          }
+        }
+      }
+    };
+		debug("paths from superclass done");
 		return 1;
 	}
-	
+
 	#prepares a link and enqueues it in a blocking queue
 	sub callActionViaMaster{
 		my $self = shift;
@@ -109,7 +140,6 @@ package Rysiek::Actions::AbstractAction 0.1{
 		my $masterBasicLink = &getBasicMasterLinkFromProperty;
 		my $user = config->{actionUserLogin};
 		my $token = config->{actionUserPassword};	
-		
 		
 		if (! defined $masterBasicLink) {
 			warn("Master not available!!");
@@ -122,7 +152,6 @@ package Rysiek::Actions::AbstractAction 0.1{
 			$masterBasicLink = $masterBasicLink. "&addParams=$actionParam"
 		}
 		
-		
 		if ($masterBasicLink) {
 			$q->enqueue($masterBasicLink);
 			return 1;
@@ -130,8 +159,6 @@ package Rysiek::Actions::AbstractAction 0.1{
 			return -1;
 		}
 	}
-	
-	
 	
 	sub getBasicMasterLinkFromProperty{
 		{
@@ -147,188 +174,154 @@ package Rysiek::Actions::AbstractAction 0.1{
 		return ;
 	}
 
-	
 	sub initStatic{
-		&initRequestsProcessor;
-		&initMastersTrackingEngine;
+    my %emptyHash: shared = ();
+    $trackedMaster = \%emptyHash;
+    &initWorkerThread;
 		return 1;		
 	}
+
+  sub initWorkerThread{
+    say "creating worker..";
+    my $worker = threads->create(
+      sub{
+        $|=1;
+        sleep 5;
+        say "worker is rolling";
+        my($lastWorkerStart, $lastMasterTrackTime) = (time, time);
+        my $masterTrackFreq = config->{masterTrackingInterval};
+        my $workerPeriod = config->{workerPeriod};
+
+        while(1){
+         $lastWorkerStart = time;
+         
+         &handleGetsFromQ;
+
+         if(time - $lastMasterTrackTime >= $masterTrackFreq){
+           &trackMaster;
+           $lastMasterTrackTime = time;
+         }
+
+         my $elapsed = (time - $lastWorkerStart) * 1000;
+         if( $elapsed < $workerPeriod){
+           my $timeToSleep = ($workerPeriod - $elapsed) / 1000;
+           sleep $timeToSleep;
+         }
+        }
+      }
+    );
+    say "detaching worker";
+    $worker->detach();
+    return 1;
+  }
 	
 	
 	#there's a thread calling urls from the queue
 	#this is used when one action wants to call some other actions
-	sub initRequestsProcessor{
-		my $thr = threads->create(
-			sub{
-				 while (defined(my $item = $q->dequeue())) {
-					debug("Processing request: $item");
-					my $res = LWP::Simple::get($item);
-					
-					if (! defined $res) {
-						warn("calling get on $item was unsuccessful.");						
-					}else{
-						debug "request: $item, response: $res";
-					}
-				 }				
-			}
-		);		
-		$thr->detach();		
-		return 1;		
-	}
-	
-	
+  sub handleGetsFromQ{
+    while( $q->pending() > 0){
+      my $item = $q->dequeue();
+      debug("Processing request: $item");
+      my $res = LWP::Simple::get($item);
 
-	#There is always a hash kept in the instance of this class
-	#storing address of currently available master.
-	#This is to save time if one action want's to call other action quickly
-	sub initMastersTrackingEngine{
+      if (! defined $res) {
+        warn("calling get on $item was unsuccessful.");						
+      }else{
+        debug "request: $item, response: $res";
+      }
+    }
+    return 1;		
+  }
+  
+  sub trackMaster{
+    $|=1;
+    {
+      lock($trackedMaster);
+      delete @$trackedMaster{keys %$trackedMaster};
 
-		my %emptyHash : shared = ();
-		$trackedMaster = \%emptyHash;
+      my $avMasters = &findUnits(config->{masterService});
 
-		my $thr = threads->create(\&trackMaster);
-		$thr->detach();
-		debug("Master tracking thread started.");
+      my $masterName = (sort keys %$avMasters)[0];
+      if (defined $masterName && $masterName ne "") {
+        my $address = $avMasters->{$masterName}{address};
+        my $port = $avMasters->{$masterName}{port};
+        if (defined $address && defined $port) {
+          my %data: shared = ();
+          %data = (address=>$address, port=>$port);
+          $trackedMaster->{$masterName} = \%data;						
+        }
+      }
+    }#lock			
+  }
+  
+  sub findUnits{
+    my $toFind = shift;
+    my $zeroconfLink = &getBasicAvahiServiceLink;
+    debug "zeroconf not defined!" unless defined $zeroconfLink;
+    my $link = $zeroconfLink . "service/$toFind";
+    debug "a link to find units of type $toFind is $link";
+    my $zeroconfRes = LWP::Simple::get($link);
+    debug"zeroconf service queried";
 
-		return 1;
-	}
+    my %result=();
+    if ( defined $zeroconfRes ) {
+      my $returnedYaml    = YAML::Tiny->read_string($zeroconfRes);
 
-	sub trackMaster{
-		while (1) {
-			my $zeroconfLink = &getBasicAvahiServiceLink;			
-			$zeroconfLink = $zeroconfLink."service/master";
-			my $res = LWP::Simple::get( $zeroconfLink);
+      if ( defined $returnedYaml->[0] ) {
+        foreach my $unit (keys %{$returnedYaml->[0]}){
+          my $address = $returnedYaml->[0]->{$unit}{address};
+          my $port    = $returnedYaml->[0]->{$unit}{port};
+          $result{$unit}={address=>$address, port=> $port };
+        }
+      }
+    }
+    #say " found units of type $toFind are:". Dumper(\%result) ;
+    return \%result;
+  }
 
-			{
-				lock($trackedMaster);
-				%$trackedMaster=();
-
-			if (defined $res) {
-				my $yaml = YAML::Tiny->read_string( $res );
-				my $firstMaster: shared;
-				my %emptyHash : shared = ();
-				$firstMaster = \%emptyHash;
-				my $firstMastNonShared = $yaml->[0];
-				my $masterName = (sort keys %$firstMastNonShared)[0];
-				if (defined $masterName) {
-					my $address = $firstMastNonShared->{$masterName}{address};
-					my $port = $firstMastNonShared->{$masterName}{port};
-					if (defined $address && defined $port) {
-						my %data: shared = ();
-						%data = (address=>$address, port=>$port);
-						$firstMaster->{$masterName} = \%data;
-						%$trackedMaster = %$firstMaster;						
-					}
-				}
-			}
-			}#lock			
-			sleep(config->{masterTrackingInterval});
-		}
-		return 1;
-	}
-
-	sub getBasicAvahiServiceLink{
-		my $avahiResolverData = &findAvahiUnits("avahi");	
-		
-		if (defined $avahiResolverData && (keys %$avahiResolverData > 0)) {
-			my $avName = (sort keys %$avahiResolverData)[0];
-			my $avData= $avahiResolverData->{$avName};
-			my $host = $avData->{address};
-			my $port = $avData->{port};
-
-			my $link= "http://$host:$port/zeroconf/$avName/";
-			return $link;
-		}else{
-			return "";
-		}
-	}
-
-
-	#wrapper around `avahi-browse` utility
-	sub findAvahiUnits{
-		my $serviceTypeNameToFind = shift;
-		my $serviceTypeToFind = config->{unitIdentifiers}{$serviceTypeNameToFind};
-
-		my @value = qx(avahi-browse -cr $serviceTypeToFind);
-		my ($inSensor, $hasName, $hasAddress, $hasPort);
-		my ($sensorName, $sensorAddress, $sensorPort);
-
-		my %sensorsLoc :shared;
-
-		foreach(@value){
-
-			if(!$inSensor){
-				$inSensor = 1 if /^=/;
-			}
-
-			if($inSensor){
-				if(!$sensorName){
-					if(/=\s+\S+\s+\S+\s+(\S+)/xi){
-						$sensorName = $1;
-						next;
-					}
-				}
-
-				if($sensorName){
-					if(!$sensorAddress){
-						if(/\s+address\s+=\s+\[(\S+)\]/xi){
-							$sensorAddress = $1;
-							next;
-						}
-					}
-				}
-
-				if($sensorName && $sensorAddress){
-					if(!$sensorPort){
-						if(/\s+port\s+=\s+\[(\S+)\]/xi){
-							$sensorPort = $1;
-						}
-					}
-				}
-
-			}
-
-			if($sensorName && $sensorAddress && $sensorPort){
-
-				share($sensorsLoc{$sensorName});
-				my %row :shared;
-				%row = (address => $sensorAddress, port => $sensorPort);
-				$sensorsLoc{$sensorName}= \%row;
-
-				$sensorName = $sensorAddress = $sensorPort =0;
-			}
-		}
-
-		return \%sensorsLoc;
-	}
-
-
-
-
+  sub getBasicAvahiServiceLink {
+    {
+      lock $zeroconfServiceLink;
+      return $zeroconfServiceLink;
+    }
+  }
 
 	#only masters can use actions directly
 	#every action defines its allowed masters separately
 	sub authorizeMaster{
 		my $self = shift;
-		my $mName = $self->name;
-		my $cfg  = $self->actionConfig();
-		my $knownMasters =  $cfg->[0]->{"knownMasters"};
-		my $currMaster = params->{user};
-		
-		if (defined $currMaster){
-			my $mastersToken = $cfg->[0]->{"mastersTokens"}{$currMaster};
-			if (defined $mastersToken){
-				if( (params->{user} ~~ @{$knownMasters}) && params->{token} eq  $mastersToken){
-					debug ( params->{user}. " authorized successfuly in  $mName ");
-					return 1;
-				}
-			}
-		}
-
-		debug ( params->{user}. " wrong credentials to action $mName. Sending 403.. ");
-		send_error("Wrong credentials", 403);
-		return 1;
+    $self->checkCredentials("knownMasters", "mastersTokens");
 	}
+  
+  sub authorizeZeroconfService{
+    my $self = shift;
+    $self->checkCredentials("knownZeroconfs", "zeroconfTokens");
+  }
+
+  sub checkCredentials {
+    my $self      = shift;
+    my $usersBase = shift;
+    my $passBase  = shift;
+    my $mName     = $self->name;
+    my $user      = params->{user};
+    my $token     = params->{token};
+
+#debug ("$user is trying to authorize in $mName with token $token. Request path: ". request->path_info);
+
+    if ( defined $user && defined $token ) {
+      if ( $user ~~ config->{$usersBase} ) {
+        if ( $token eq config->{$passBase}{$user} ) {
+
+          #debug ("$user authorized successfuly in $mName ");
+          return 1;
+        }
+      }
+    }
+
+    debug("$user wrong credentials to  $mName. Sending 403.. ");
+    send_error( "Wrong credentials", 403 );
+    1;
+  }
 
 	1;
 }

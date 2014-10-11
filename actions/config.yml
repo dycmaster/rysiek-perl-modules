@@ -4,16 +4,7 @@ appname: "actions"
 charset: "UTF-8"
 serializer: YAML
 logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
-
-unitIdentifiers:
-        sensor: '_nufw._tcp' 
-        master: '_islc._tcp'
-        action: '_venus._tcp'
-        processor: '_topx._tcp'
-        ui: '_unicontrol._tcp'
-        data: '_netangel._tcp'
-        log: '_integral._tcp'
-        avahi: '_krb524._udp'
+actionServiceAvahiType: _venus._tcp
 
 wemoDb: '/tmp/wemo.db'
 wemoAmpName: rysiek
@@ -23,3 +14,14 @@ actionUserLogin: actionService
 actionUserPassword: password
 
 masterTrackingInterval: 5
+workerPeriod: 200
+
+masterService: 'master'
+
+knownZeroconfs:
+  - zeroconfService
+
+zeroconfTokens:
+  zeroconfService: token
+
+

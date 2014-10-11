@@ -8,7 +8,8 @@ logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
 
 myName: zeroconfService
 myToken: token
-trackingInterval: 20
+avahiScanFrequency: 20
+workerPeriod: 200
 
 
 unitIdentifiers:
@@ -31,8 +32,11 @@ unitTypesToTrack:
 # this is to form the first part of a link when accessing a given type of a service
 serviceTypeLinks:
         master: masters
+        action: actions
+
 
 serviceTypesToOfferService:
         - master
+        - action
 
 
