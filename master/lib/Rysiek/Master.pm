@@ -408,7 +408,7 @@ package Rysiek::Master 0.01 {
           }else{
             if( ! defined $zeroconfServiceLink || $zeroconfServiceLink eq "" ||
             $zeroconfServiceLink ne $link){
-              debug("link $link replies to ping and it will be new zeroconf link");
+            #debug("link $link replies to ping and it will be new zeroconf link");
               $zeroconfServiceLink=$link;
             }
           }

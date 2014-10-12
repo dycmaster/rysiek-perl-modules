@@ -146,13 +146,9 @@ package Rysiek::Zeroconf 0.01{
   sub handlePostFromQueue{
     while ( $postQ->pending() > 0 ) {
       my $item = $postQ->dequeue();
-      say "Handling POST request $item->{url}";
       my $ua  = LWP::UserAgent->new;
       my $res = $ua->request( POST "$item->{url}", $item->{data} );
-      if ( $res->is_success ) {
-        say "POST request $item->{url} sent successfully";
-      }
-      else {
+      if (! $res->is_success ) {
         say "unable to send POST request $item->{url}";
       }
     }
