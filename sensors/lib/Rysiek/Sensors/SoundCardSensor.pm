@@ -6,29 +6,17 @@ package Rysiek::Sensors::SoundCardSensor v0.0.1{
   use Data::Dumper;
   use Net::OpenSSH;
 
-#needed! contains whole logic of constant measuring and
-#updating registered masters
-  sub constantMeasurements{
+  has "+lastValue" => (
+    default => ()
+  );
+
+  sub hasChanged{
     my $self = shift;
-    sleep(2);
-
-    my $last_state = "busy";
-
-    while(1){
-
-      my @res = $self->measureOnce();
-      my $currState = $res[0];
-      if($last_state ne $currState){
-        debug("sound card status is now: @res");
-        $self->updateMastersWithValue(\@res);
-      }
-      $last_state = $currState;
-
-      sleep $self->sensorConfig()->[0]->{"constantMeasureFrequency"};
-    }
+    my $currVal = shift;
+    return 0 if(($self->lastValue)[0] eq @$currVal[0]);
+    return 1;
   }
 
-#needed for a single-shot measurement
   sub measureOnce{
     my $self = shift;
     my $pathToCheck = $self->sensorConfig()->[0]->{"pathToCheck"};
@@ -36,7 +24,7 @@ package Rysiek::Sensors::SoundCardSensor v0.0.1{
     my $cfg  = $self->sensorConfig();
     my $cmd = "cat ".$pathToCheck;
     my $firstLine;
-    
+
     if( $cfg->[0]->{"local"} eq 1 ){
       open my $file, '<', $self->sensorConfig()->[0]->{"pathToCheck"} or die; 
       $firstLine = <$file>; 
@@ -51,7 +39,6 @@ package Rysiek::Sensors::SoundCardSensor v0.0.1{
       $firstLine = $stdout[0];
     }
 
-
     my @res;
     if($firstLine=~/\s*closed\s*/i){
       @res =("0");
@@ -60,5 +47,5 @@ package Rysiek::Sensors::SoundCardSensor v0.0.1{
     }
     return @res;
   }
-1;
+  1;
 }

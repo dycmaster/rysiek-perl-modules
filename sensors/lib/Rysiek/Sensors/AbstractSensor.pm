@@ -36,7 +36,24 @@ package Rysiek::Sensors::AbstractSensor 0.1{
       my $config = YAML::Tiny->read($configPath);
       $config;
     }
+  );
 
+  has "lastValue" =>(
+    is => "rw",
+  );
+
+  has "constantWorkFrequency" => (
+    is => "ro",
+    lazy => 1,
+    default => sub{
+      my $self = shift;
+      my $fromCfg= $self->sensorConfig->[0]->{"constantMeasureFrequency"};
+      if( defined $fromCfg){
+        $fromCfg;
+      }else{
+        10;
+      }
+    }
   );
 
   sub printConfig {
@@ -58,11 +75,14 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     $self->initAvahi;
     debug ("Avahi done for ". ref $self);
 
-    $self->initSensing;
-    debug ("initSensing done for ". ref $self);
-
+    if(! config->{oneThread}){
+      $self->initSensing;
+      debug ("initSensing done for ". ref $self);
+    }else{
+      $self->initSensingSingleThread;
+      debug("single-thread mode is active.");
+    }
   }
-
 
   sub initSensing{
     my $self = shift;
@@ -74,6 +94,11 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     $thr->detach();
   }
 
+  sub initSensingSingleThread{
+    my $self = shift;
+    Rysiek::Sensors->registerForSensingLoop($self);
+  }
+
 
   sub initAvahi{
     my $self = shift;
@@ -82,7 +107,7 @@ package Rysiek::Sensors::AbstractSensor 0.1{
       or die "couldn't make a Publisher object";
     my $service = $publisher->publish(
       name => $self->name,
-      type => '_nufw._tcp',
+      type => config->{myAvahiType},
       port => $self->port,
     );
     1;
@@ -196,10 +221,10 @@ package Rysiek::Sensors::AbstractSensor 0.1{
     $|=1;
     {
       lock($self->{registeredMasters});
-      my $mSize = keys $self->{registeredMasters};
+      my $mSize = keys %{$self->{registeredMasters}};
       say("sensor $name will update masters with its change. Current masters: $mSize");
 
-      foreach my $master (keys $self->{registeredMasters}){
+      foreach my $master (keys %{$self->{registeredMasters}}){
         my $masterIp = $self->{registeredMasters}{$master}{ip};
         my $masterPort = $self->{registeredMasters}{$master}{port};
         my $myToken = $self->sensorConfig->[0]->{"mastersCredentials"}{$master};
@@ -212,6 +237,32 @@ package Rysiek::Sensors::AbstractSensor 0.1{
         $Rysiek::Sensors::postQ->enqueue(\%reqData);
       }
     }
+  }
+
+  sub hasChanged{
+    return 1;
+  }
+
+  sub constantMeasurements{
+    my $self = shift;
+    $|=1;
+    sleep(5);
+
+    while(1){
+      $self->oneMeasurementCycle;
+      sleep $self->constantWorkFrequency;
+    }
+  }
+
+  sub oneMeasurementCycle{
+    my $self = shift;
+    $|=1;
+    my @res = $self->measureOnce();
+    if($self->hasChanged(\@res)){
+      say("sensor:". $self->name . " status changed. New status: @res");
+      $self->updateMastersWithValue(\@res);
+    }
+    $self->lastValue(@res);
   }
 
   true;

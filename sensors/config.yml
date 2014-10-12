@@ -7,4 +7,9 @@ logger_format: %{%H:%M %Y-%m-%d}t: %m in %f l. %l
 
 workerPeriod: 200
 masterCheckerFrequency: 5
+myAvahiType: '_nufw._tcp'
 
+        # this says that all the sensors should be handled by only 1 common thread
+        # if this is 0 - a new thread for every single sensor will be created.
+        # remember - Perl's threads are ugly and heavy!
+oneThread: 1

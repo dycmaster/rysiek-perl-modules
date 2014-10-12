@@ -16,14 +16,13 @@ package Rysiek::Sensors 0.01{
   my %mastersToTrack : shared = ();
   our $postQ = Thread::Queue->new();
 
-
   sub getPort {
     my $proto = getprotobyname("tcp");
-    my $iaddr   = inet_aton("localhost");
-    my $paddr = sockaddr_in(0, $iaddr);
-    socket(SOCK, PF_INET, SOCK_STREAM, $proto);
-    connect(SOCK, $paddr);
-    my $port = (sockaddr_in(getsockname(SOCK)))[0];
+    my $iaddr = inet_aton("localhost");
+    my $paddr = sockaddr_in( 0, $iaddr );
+    socket( SOCK, PF_INET, SOCK_STREAM, $proto );
+    connect( SOCK, $paddr );
+    my $port = ( sockaddr_in( getsockname(SOCK) ) )[0];
     close(SOCK);
     $port;
   }
@@ -43,8 +42,6 @@ package Rysiek::Sensors 0.01{
     set port => $dancerPort;
     debug "Dancer port will be $dancerPort";
 
-    &initWorkerThread;
-
     foreach my $sensor (@{config->{sensors}}){
       my $sensorModule="Rysiek::Sensors::$sensor";
       load_module $sensorModule;
@@ -53,6 +50,17 @@ package Rysiek::Sensors 0.01{
       debug "Loaded and initiated sensor: $sensorModule";
     }
 
+    &initWorkerThread;
+  }
+
+
+  our %sensingFellas = ();
+  sub registerForSensingLoop{
+    shift;
+    my $sensor = shift;
+    my $size = keys %sensingFellas;
+    $sensingFellas{$size}{ref}=$sensor;
+    $sensingFellas{$size}{lastTime}=0;
   }
   
   sub initWorkerThread{
@@ -71,6 +79,19 @@ package Rysiek::Sensors 0.01{
           if(time - $lastMasterTrackTime >= $masterUpdateF){
             &checkMasters;
             $lastMasterTrackTime = time;
+          }
+
+          if(config->{oneThread}){
+            foreach my $no(keys %sensingFellas){
+              my $sensRef = $sensingFellas{$no}{ref};
+              my $lastTime = $sensingFellas{$no}{lastTime};
+              my $sensElapsed = (time - $lastTime);
+              my $freq = $sensRef->constantWorkFrequency;
+              if($sensElapsed >= $freq){
+                $sensRef->oneMeasurementCycle();
+                $sensingFellas{$no}{lastTime}=time;
+              }
+            }
           }
 
           my $elasped = (time - $lastWorkerStart) * 1000;

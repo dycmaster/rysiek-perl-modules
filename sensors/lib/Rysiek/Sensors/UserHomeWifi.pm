@@ -6,23 +6,10 @@ package Rysiek::Sensors::UserHomeWifi v0.0.1{
   use Data::Dumper;
   use Net::OpenSSH;
 
-
-  #needed! contains whole logic of constant measuring and
-  #updating registered masters
-  sub constantMeasurements{
-    my $self = shift;
-    sleep(2);
-
-
-    while(1){
-      my $value = $self->measureOnce;
-      $self->updateMastersWithValue($value);
-      sleep $self->sensorConfig()->[0]->{"constantMeasureFrequency"};
-    }
+  sub hasChanged{
+    return 1;
   }
 
-
-#needed for a single-shot measurement
   sub measureOnce{
     my $self = shift;
     my $cfg  = $self->sensorConfig();
@@ -38,17 +25,12 @@ package Rysiek::Sensors::UserHomeWifi v0.0.1{
     }
 
     my $stdout = $self->{'ssh2'}->capture($cmd);
-
     my @m = ( $stdout =~ /((?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2})/ig );
     my $trackedMac = $cfg->[0]->{trackedMac};
-    debug("MACs in UserHomeWifi:");
-    debug("@m");
 
     if ( $trackedMac ~~ @m) {
-      debug("true");
       return "1";
     }else{
-      debug("false");
       return "0";
     }   
 
